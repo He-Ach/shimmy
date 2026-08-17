@@ -28,11 +28,15 @@ jobs:
           Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name
           Get-PSDrive C | Select-Object Used,Free
 
-      - name: Checkout mistral.rs
+      # Our fork, not upstream: upstream master does not compile on Windows. Its
+      # marlin kernel header throws std::runtime_error built from std::to_string while
+      # including only <iostream>, which libstdc++ forgives and MSVC does not. The fork
+      # carries that two-line include fix and nothing else.
+      - name: Checkout mistral.rs (fork with the Windows include fix)
         uses: actions/checkout@v4
         with:
-          repository: EricLBuehler/mistral.rs
-          ref: master
+          repository: He-Ach/mistral.rs
+          ref: windows-cuda-fix
           fetch-depth: 1
 
       - name: Install CUDA toolkit
