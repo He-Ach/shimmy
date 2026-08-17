@@ -164,10 +164,12 @@ jobs:
         with:
           cuda: "12.8.0"
           method: "network"
-          # Linux names its CUDA libraries differently than Windows does: the Windows
-          # spelling `cublas` resolves to no apt package at all, and the install step
-          # fails with "Unable to locate package cuda-cublas-12-8".
-          sub-packages: '["nvcc", "cudart", "libcublas", "libcublas-dev", "libcurand", "libcurand-dev", "nvrtc", "nvrtc-dev"]'
+          # Two lists, because Ubuntu splits CUDA across two apt namespaces and the
+          # action prefixes `sub-packages` entries with `cuda-`. The math libraries are
+          # not in that namespace — they are `libcublas-12-8`, not `cuda-libcublas-12-8` —
+          # so asking for them in the first list produces "Unable to locate package".
+          sub-packages: '["nvcc", "cudart", "nvrtc", "nvrtc-dev"]'
+          non-cuda-sub-packages: '["libcublas", "libcublas-dev", "libcurand", "libcurand-dev"]'
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
