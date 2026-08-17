@@ -18,14 +18,18 @@ on:
 
 jobs:
   build:
-    # windows-2022, not windows-latest. The latest image ships Visual Studio 18, whose
-    # STL hard-refuses CUDA older than 13.2:
+    # A WarpBuild runner: 16 vCPU against the GitHub standard runner's 4, and against the
+    # 4 physical cores of the machine this was developed on. The build is CUDA-kernel
+    # bound, so cores are the whole lever - 35m32s on the GitHub runner versus 20m52s
+    # locally, both measured on this workflow.
+    #
+    # `warp-windows-latest-x64-16x` is Windows Server 2022 with Visual Studio 2022, which
+    # is the pairing this build requires. Do NOT switch to a `-vs2026-` image: VS2026's
+    # STL refuses any CUDA older than 13.2 -
     #   yvals_core.h(911): error STL1002: Unexpected compiler version, expected CUDA 13.2
-    # and nvcc 12.8 independently refuses any host compiler past VS2022. Overriding nvcc's
-    # side with -allow-unsupported-compiler only moves the error into the STL headers.
-    # windows-2022 carries VS2022, which is the pair CUDA 12.8 supports and the pair the
-    # local build was validated with.
-    runs-on: windows-2022
+    # - while nvcc 12.8 independently refuses any host compiler newer than VS2022. There
+    # is no flag that satisfies both; overriding nvcc only moves the error into the STL.
+    runs-on: warp-windows-latest-x64-16x
     timeout-minutes: 180
     steps:
       - name: Report runner size
@@ -115,7 +119,7 @@ jobs:
           rustc --version
           Write-Host "linker resolves to: $((Get-Command link.exe).Source)"
           $start = Get-Date
-          cargo build --release --features "cuda flash-attn cudnn" -p mistralrs-cli
+          cargo build --release --features "cuda flash-attn" -p mistralrs-cli
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $secs = [int]((Get-Date) - $start).TotalSeconds
           "BUILD_SECONDS=$secs" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -188,7 +192,7 @@ jobs:
         run: |
           nvcc --version | tail -2
           start=$(date +%s)
-          cargo build --release --features "cuda flash-attn cudnn" -p mistralrs-cli
+          cargo build --release --features "cuda flash-attn" -p mistralrs-cli
           echo "::notice title=Linux CUDA build::$(( $(date +%s) - start ))s on $(nproc) cores"
           ls -la target/release/mistralrs
 
