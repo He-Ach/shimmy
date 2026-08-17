@@ -18,7 +18,14 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # windows-2022, not windows-latest. The latest image ships Visual Studio 18, whose
+    # STL hard-refuses CUDA older than 13.2:
+    #   yvals_core.h(911): error STL1002: Unexpected compiler version, expected CUDA 13.2
+    # and nvcc 12.8 independently refuses any host compiler past VS2022. Overriding nvcc's
+    # side with -allow-unsupported-compiler only moves the error into the STL headers.
+    # windows-2022 carries VS2022, which is the pair CUDA 12.8 supports and the pair the
+    # local build was validated with.
+    runs-on: windows-2022
     timeout-minutes: 180
     steps:
       - name: Report runner size
@@ -76,15 +83,14 @@ jobs:
         shell: pwsh
         env:
           CUDA_COMPUTE_CAP: ${{ inputs.compute_cap }}
-          # The runner's newest Visual Studio is VS18 (MSVC 14.51) and CUDA 12.8 refuses
-          # any host compiler past VS2022:
-          #   host_config.h(170): fatal error C1189: unsupported Microsoft Visual Studio
-          #   version! Only the versions between 2017 and 2022 (inclusive) are supported!
-          # nvcc reads NVCC_PREPEND_FLAGS from the environment, which is the only way to
-          # pass the override down through candle's build script. CUDA 12.8 is kept
-          # deliberately: it is the toolkit the local build was validated against, so the
-          # artifact matches what has actually been run on a GPU.
-          NVCC_PREPEND_FLAGS: "-allow-unsupported-compiler"
+          # Rust links the dynamic CRT on windows-msvc while nvcc defaults to the static
+          # one, and a binary cannot contain both:
+          #   rust-lld: /failifmismatch: mismatch detected for 'RuntimeLibrary'
+          #   mimalloc-static.o = MD_DynamicRelease, moe_gemv.o = MT_StaticRelease
+          # CUDA_NVCC_FLAGS is the knob mistralrs exposes for host-compiler flags.
+          # Spelled -MD rather than /MD: cl accepts both, and the dash form survives
+          # shells that rewrite leading-slash values into paths.
+          CUDA_NVCC_FLAGS: "-MD"
         run: |
           nvcc --version | Select-Object -Last 2
           rustc --version
