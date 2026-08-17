@@ -84,13 +84,19 @@ jobs:
         env:
           CUDA_COMPUTE_CAP: ${{ inputs.compute_cap }}
           # Rust links the dynamic CRT on windows-msvc while nvcc defaults to the static
-          # one, and a binary cannot contain both:
+          # one, and one binary cannot contain both:
           #   rust-lld: /failifmismatch: mismatch detected for 'RuntimeLibrary'
-          #   mimalloc-static.o = MD_DynamicRelease, moe_gemv.o = MT_StaticRelease
-          # CUDA_NVCC_FLAGS is the knob mistralrs exposes for host-compiler flags.
-          # Spelled -MD rather than /MD: cl accepts both, and the dash form survives
-          # shells that rewrite leading-slash values into paths.
-          CUDA_NVCC_FLAGS: "-MD"
+          #   mistralrsquant.lib = MD_DynamicRelease, libmoe.a = MT_StaticRelease
+          #
+          # The fork's build.rs already fixes mistralrs's own kernels. libmoe.a belongs to
+          # candle-kernels, a git dependency whose build script has no msvc branch, so
+          # CUDA_NVCC_FLAGS (a mistralrs-specific knob) cannot reach it. nvcc reads
+          # NVCC_PREPEND_FLAGS on every invocation no matter which build script spawned
+          # it, which is what makes it work for a dependency's kernels too.
+          #
+          # Dash-spelled -MD: cl accepts it identically to /MD, and it survives shells
+          # that rewrite leading-slash values into paths.
+          NVCC_PREPEND_FLAGS: "-Xcompiler -MD"
         run: |
           nvcc --version | Select-Object -Last 2
           rustc --version
