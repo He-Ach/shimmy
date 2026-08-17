@@ -119,3 +119,61 @@ jobs:
           name: mistralrs-windows-cuda-sm${{ inputs.compute_cap }}
           path: target/release/mistralrs.exe
           if-no-files-found: error
+
+  # The Linux binary matters even on a Windows machine. Upstream's newest release is
+  # v0.9.1 (2026-08-14) and the qwen3.5 hybrid fixes landed the next day in d1ffbe7e, so
+  # the published tarball cannot serve a second tool-call round for ornith: its chat
+  # template gets `arguments` as the OpenAI wire string and dies on `|items` with
+  # "cannot convert value into pairs". Building master gets that fix.
+  #
+  # It runs under Docker locally with --gpus all, which is also the only way ornith runs
+  # on this hardware at all — the native Windows build segfaults in the Gated DeltaNet
+  # path, while qwen3-family models work there fine.
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Report runner size
+        run: |
+          nproc
+          df -h / | tail -1
+
+      - name: Checkout mistral.rs (fork)
+        uses: actions/checkout@v4
+        with:
+          repository: He-Ach/mistral.rs
+          ref: windows-cuda-fix
+          fetch-depth: 1
+
+      # A GPU is not needed to compile device code, only nvcc.
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: "12.8.0"
+          method: "network"
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas-dev", "curand", "curand-dev", "nvrtc", "nvrtc-dev"]'
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: mistralrs-linux-cuda-${{ inputs.compute_cap }}
+
+      - name: Build
+        env:
+          CUDA_COMPUTE_CAP: ${{ inputs.compute_cap }}
+        run: |
+          nvcc --version | tail -2
+          start=$(date +%s)
+          cargo build --release --features cuda -p mistralrs-cli
+          echo "::notice title=Linux CUDA build::$(( $(date +%s) - start ))s on $(nproc) cores"
+          ls -la target/release/mistralrs
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mistralrs-linux-cuda-sm${{ inputs.compute_cap }}
+          path: target/release/mistralrs
+          if-no-files-found: error
