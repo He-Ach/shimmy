@@ -14,6 +14,8 @@ pub struct InferenceEngineAdapter {
     huggingface_engine: super::huggingface::HuggingFaceEngine,
     #[cfg(feature = "mlx")]
     mlx_engine: super::mlx::MLXEngine,
+    #[cfg(feature = "candle")]
+    candle_engine: super::candle_engine::CandleEngine,
     safetensors_engine: super::safetensors_native::SafeTensorsEngine,
     // Note: loaded_models removed as caching is not currently implemented
 }
@@ -31,6 +33,8 @@ impl InferenceEngineAdapter {
             huggingface_engine: super::huggingface::HuggingFaceEngine::new(),
             #[cfg(feature = "mlx")]
             mlx_engine: super::mlx::MLXEngine::new(),
+            #[cfg(feature = "candle")]
+            candle_engine: super::candle_engine::CandleEngine::new(),
             safetensors_engine: super::safetensors_native::SafeTensorsEngine::new(),
         }
     }
@@ -42,6 +46,8 @@ impl InferenceEngineAdapter {
             huggingface_engine: super::huggingface::HuggingFaceEngine::new(),
             #[cfg(feature = "mlx")]
             mlx_engine: super::mlx::MLXEngine::new(),
+            #[cfg(feature = "candle")]
+            candle_engine: super::candle_engine::CandleEngine::new(),
             safetensors_engine: super::safetensors_native::SafeTensorsEngine::new(),
         }
     }
@@ -59,14 +65,24 @@ impl InferenceEngineAdapter {
                     return BackendChoice::SafeTensors;
                 }
                 "gguf" => {
+                    // Candle wins over Airframe for GGUF when both are compiled in: it is the
+                    // engine that actually completed a prefill on a 9B, and it was faster on
+                    // the models measured (42.8 vs 39.3 tok/s against Ollama on the same card).
+                    #[cfg(feature = "candle")]
+                    {
+                        return BackendChoice::Candle;
+                    }
                     // GGUF models require the Airframe GPU engine (shimmy_server_gpu)
                     // or a build compiled with the GPU backend.
-                    return BackendChoice::Unsupported(
-                        "GGUF models require the Airframe GPU engine. \
-                         Use shimmy_server_gpu or build with --features airframe. \
-                         See https://github.com/Michael-A-Kuykendall/shimmy for setup."
-                            .to_string(),
-                    );
+                    #[cfg(not(feature = "candle"))]
+                    {
+                        return BackendChoice::Unsupported(
+                            "GGUF models require a GPU engine. \
+                             Build with --features candle (CUDA) or --features airframe (WebGPU). \
+                             See https://github.com/Michael-A-Kuykendall/shimmy for setup."
+                                .to_string(),
+                        );
+                    }
                 }
                 #[cfg(feature = "mlx")]
                 "npz" | "mlx" => {
@@ -116,15 +132,21 @@ impl InferenceEngineAdapter {
         // Check for Ollama blob files (GGUF files without extension)
         if path_str.contains("ollama") && path_str.contains("blobs") && path_str.contains("sha256-")
         {
-            #[cfg(feature = "huggingface")]
+            // Ollama blobs are GGUF without the extension, so they belong to the GGUF engine
+            // before the HuggingFace ID heuristics get a look at them.
+            #[cfg(feature = "candle")]
+            {
+                return BackendChoice::Candle;
+            }
+            #[cfg(all(feature = "huggingface", not(feature = "candle")))]
             {
                 return BackendChoice::HuggingFace;
             }
-            #[cfg(not(feature = "huggingface"))]
+            #[cfg(not(any(feature = "huggingface", feature = "candle")))]
             {
                 return BackendChoice::Unsupported(
-                    "Ollama blob models require the Airframe GPU engine or HuggingFace backend. \
-                     Use shimmy_server_gpu or build with --features airframe."
+                    "Ollama blob models require a GPU engine or the HuggingFace backend. \
+                     Build with --features candle (CUDA) or --features airframe (WebGPU)."
                         .to_string(),
                 );
             }
@@ -138,15 +160,19 @@ impl InferenceEngineAdapter {
             || spec.name.contains("gemma")
             || spec.name.contains("mistral")
         {
-            #[cfg(feature = "huggingface")]
+            #[cfg(feature = "candle")]
+            {
+                return BackendChoice::Candle;
+            }
+            #[cfg(all(feature = "huggingface", not(feature = "candle")))]
             {
                 return BackendChoice::HuggingFace;
             }
-            #[cfg(not(feature = "huggingface"))]
+            #[cfg(not(any(feature = "huggingface", feature = "candle")))]
             {
                 return BackendChoice::Unsupported(
-                    "GGUF-named models require the Airframe GPU engine or HuggingFace backend. \
-                     Use shimmy_server_gpu or build with --features airframe."
+                    "GGUF-named models require a GPU engine or the HuggingFace backend. \
+                     Build with --features candle (CUDA) or --features airframe (WebGPU)."
                         .to_string(),
                 );
             }
@@ -174,6 +200,8 @@ enum BackendChoice {
     #[cfg(feature = "mlx")]
     #[allow(clippy::upper_case_acronyms)]
     MLX,
+    #[cfg(feature = "candle")]
+    Candle,
     SafeTensors,
     Unsupported(String),
 }
@@ -196,6 +224,8 @@ impl InferenceEngine for InferenceEngineAdapter {
                 // Use MLX engine for Apple Silicon Metal GPU acceleration
                 self.mlx_engine.load(spec).await
             }
+            #[cfg(feature = "candle")]
+            BackendChoice::Candle => self.candle_engine.load(spec).await,
             #[cfg(feature = "huggingface")]
             BackendChoice::HuggingFace => {
                 // Convert to UniversalModelSpec for huggingface backend (for HF model IDs)
@@ -256,6 +286,28 @@ mod tests {
             ctx_len: 2048,
             n_threads: None,
         }
+    }
+
+    /// A .gguf file must reach the candle engine when it is compiled in.
+    ///
+    /// This is the regression the server hit on a rented GPU: the candle backend existed,
+    /// the model loaded from disk, and every request still failed with "GGUF models require
+    /// the Airframe GPU engine" because nothing routed to it. An engine that is never
+    /// selected is an engine that does not exist.
+    #[cfg(feature = "candle")]
+    #[test]
+    fn gguf_routes_to_candle() {
+        let adapter = InferenceEngineAdapter::new();
+
+        let explicit = create_test_spec("qwen3-8b", "/workspace/models/qwen3-8b.gguf");
+        assert_eq!(adapter.select_backend(&explicit), BackendChoice::Candle);
+
+        // Ollama stores GGUF as extensionless blobs; same engine, different naming.
+        let blob = create_test_spec(
+            "qwen3",
+            "/root/.ollama/models/blobs/sha256-af63361d2ac3ba2cb454f440842e345b926a50fe89",
+        );
+        assert_eq!(adapter.select_backend(&blob), BackendChoice::Candle);
     }
 
     #[test]
