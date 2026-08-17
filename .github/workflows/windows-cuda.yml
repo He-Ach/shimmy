@@ -115,7 +115,7 @@ jobs:
           rustc --version
           Write-Host "linker resolves to: $((Get-Command link.exe).Source)"
           $start = Get-Date
-          cargo build --release --features cuda -p mistralrs-cli
+          cargo build --release --features "cuda flash-attn cudnn" -p mistralrs-cli
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $secs = [int]((Get-Date) - $start).TotalSeconds
           "BUILD_SECONDS=$secs" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -139,9 +139,9 @@ jobs:
   # template gets `arguments` as the OpenAI wire string and dies on `|items` with
   # "cannot convert value into pairs". Building master gets that fix.
   #
-  # It runs under Docker locally with --gpus all, which is also the only way ornith runs
-  # on this hardware at all — the native Windows build segfaults in the Gated DeltaNet
-  # path, while qwen3-family models work there fine.
+  # It runs under Docker locally with --gpus all. Native Windows runs ornith too since
+  # ffd53a1, but it has no PagedAttention upstream, so its decode degrades roughly 3x once
+  # the context reaches 9k tokens. Both binaries are worth having.
   build-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -188,7 +188,7 @@ jobs:
         run: |
           nvcc --version | tail -2
           start=$(date +%s)
-          cargo build --release --features cuda -p mistralrs-cli
+          cargo build --release --features "cuda flash-attn cudnn" -p mistralrs-cli
           echo "::notice title=Linux CUDA build::$(( $(date +%s) - start ))s on $(nproc) cores"
           ls -la target/release/mistralrs
 
