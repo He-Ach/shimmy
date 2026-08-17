@@ -45,6 +45,15 @@ jobs:
           # larger download for no gain on a build-only runner.
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "curand", "curand_dev", "nvrtc", "nvrtc_dev", "visual_studio_integration"]'
 
+      # nvcc shells out to a host compiler and finds it on PATH only. The runner has
+      # Visual Studio installed but does not put cl.exe on PATH, so without this every
+      # .cu file dies with "nvcc fatal : Cannot find compiler 'cl.exe' in PATH" — which
+      # is exactly how the first run of this workflow failed.
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
