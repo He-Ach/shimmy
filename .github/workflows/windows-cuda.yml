@@ -15,6 +15,10 @@ on:
         description: "CUDA compute capability (86 = RTX 3060/3090)"
         required: false
         default: "86"
+      windows_runner:
+        description: "Runner for the Windows job. warp-windows-latest-x64-16x (16 vCPU, paid) or windows-2022 (4 vCPU, free)."
+        required: false
+        default: "warp-windows-latest-x64-16x"
 
 jobs:
   build:
@@ -29,7 +33,7 @@ jobs:
     #   yvals_core.h(911): error STL1002: Unexpected compiler version, expected CUDA 13.2
     # - while nvcc 12.8 independently refuses any host compiler newer than VS2022. There
     # is no flag that satisfies both; overriding nvcc only moves the error into the STL.
-    runs-on: warp-windows-latest-x64-16x
+    runs-on: ${{ inputs.windows_runner }}
     timeout-minutes: 180
     steps:
       - name: Report runner size
