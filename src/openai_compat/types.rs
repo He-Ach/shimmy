@@ -86,6 +86,55 @@ pub struct ChatCompletionRequest {
     pub frequency_penalty: Option<f32>,
     #[serde(default)]
     pub presence_penalty: Option<f32>,
+    /// Function/tool definitions, OpenAI shape. Rendered into the prompt by the model's
+    /// chat template rather than passed to the engine — the model only ever sees text.
+    #[serde(default)]
+    pub tools: Option<Vec<ToolSpec>>,
+    /// Accepted for API compatibility. `"none"` suppresses the tools block; every other
+    /// value behaves as `"auto"`, because forcing a call requires constrained decoding
+    /// that the engine does not expose yet. Saying so beats silently ignoring it.
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
+}
+
+/// One entry of the `tools` array: `{"type":"function","function":{...}}`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ToolSpec {
+    #[serde(rename = "type", default = "default_tool_type")]
+    pub tool_type: String,
+    pub function: FunctionSpec,
+}
+
+fn default_tool_type() -> String {
+    "function".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FunctionSpec {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// JSON Schema for the arguments. Passed through to the prompt verbatim.
+    #[serde(default)]
+    pub parameters: Option<serde_json::Value>,
+}
+
+/// A tool call on the way back out, in the shape clients expect from OpenAI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: FunctionCall,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FunctionCall {
+    pub name: String,
+    /// A JSON **string**, not an object. This is the part of the OpenAI wire format that
+    /// surprises every client author, and getting it wrong breaks deserialization on the
+    /// other side.
+    pub arguments: String,
 }
 
 /// Request body for POST /v1/completions (legacy text completion).
@@ -134,8 +183,29 @@ pub struct ChatCompletionResponse {
 #[derive(Debug, Serialize)]
 pub struct Choice {
     pub index: usize,
-    pub message: ChatMessage,
+    pub message: AssistantMessage,
     pub finish_reason: Option<String>,
+}
+
+/// The assistant turn as OpenAI returns it. `content` is null when the model called a
+/// tool instead of answering - clients branch on exactly that.
+#[derive(Debug, Serialize)]
+pub struct AssistantMessage {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+impl AssistantMessage {
+    pub fn text(content: String) -> Self {
+        Self { role: "assistant".into(), content: Some(content), tool_calls: None }
+    }
+
+    pub fn calls(calls: Vec<ToolCall>) -> Self {
+        Self { role: "assistant".into(), content: None, tool_calls: Some(calls) }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,6 +235,8 @@ pub struct ChunkChoice {
 pub struct Delta {
     pub content: Option<String>,
     pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

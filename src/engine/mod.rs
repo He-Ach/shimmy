@@ -155,4 +155,6 @@ pub mod mlx;
 pub mod adapter;
 #[cfg(feature = "airframe")]
 pub mod airframe;
+#[cfg(feature = "candle")]
+pub mod candle_engine;
 pub mod safetensors_native;

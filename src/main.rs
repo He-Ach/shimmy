@@ -15,6 +15,7 @@ mod openai_compat;
 mod port_manager;
 mod server;
 mod templates;
+mod tool_calling;
 mod util {
     pub mod diag;
     pub mod memory;

@@ -20,6 +20,7 @@ pub mod rustchain_compat;
 pub mod safetensors_adapter;
 pub mod server;
 pub mod templates;
+pub mod tool_calling;
 pub mod tools;
 pub mod util {
     pub mod diag;

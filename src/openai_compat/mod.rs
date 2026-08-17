@@ -169,7 +169,7 @@ pub async fn chat_completions(
     let last_user_message = last_user_text.as_deref();
 
     // Build conversation history without the last user message
-    let history: Vec<_> = if last_user_message.is_some() {
+    let mut history: Vec<_> = if last_user_message.is_some() {
         req.messages
             .iter()
             .take(req.messages.len().saturating_sub(1))
@@ -178,6 +178,24 @@ pub async fn chat_completions(
     } else {
         pairs.clone()
     };
+
+    // Tool definitions are prompt, not engine configuration: the model only ever sees text.
+    // The block goes *inside* the system turn rather than becoming a second system message,
+    // because that is where the Qwen/Hermes templates put it and where the model was tuned
+    // to look for it.
+    let active_tools: Vec<ToolSpec> = match &req.tools {
+        Some(t) if !t.is_empty() && !crate::tool_calling::tools_disabled(req.tool_choice.as_ref()) => {
+            t.clone()
+        }
+        _ => Vec::new(),
+    };
+    if !active_tools.is_empty() {
+        let block = crate::tool_calling::render_tools_block(&active_tools);
+        match history.iter_mut().find(|(role, _)| role == "system") {
+            Some((_, content)) => content.push_str(&block),
+            None => history.insert(0, ("system".to_string(), block.trim_start().to_string())),
+        }
+    }
 
     let prompt = fam.render(None, &history, last_user_message);
 
@@ -247,6 +265,7 @@ pub async fn chat_completions(
                 choices: vec![ChunkChoice {
                     index: 0,
                     delta: Delta {
+                        tool_calls: None,
                         role: Some("assistant".to_string()),
                         content: None,
                     },
@@ -272,6 +291,7 @@ pub async fn chat_completions(
                             choices: vec![ChunkChoice {
                                 index: 0,
                                 delta: Delta {
+                                    tool_calls: None,
                                     role: None,
                                     content: Some(tok),
                                 },
@@ -295,6 +315,7 @@ pub async fn chat_completions(
                 choices: vec![ChunkChoice {
                     index: 0,
                     delta: Delta {
+                        tool_calls: None,
                         role: None,
                         content: None,
                     },
@@ -328,13 +349,25 @@ pub async fn chat_completions(
                         .unwrap_or_default()
                         .as_secs(),
                     model: req.model,
-                    choices: vec![Choice {
-                        index: 0,
-                        message: crate::api::ChatMessage {
-                            role: "assistant".to_string(),
-                            content,
-                        },
-                        finish_reason: Some("stop".to_string()),
+                    choices: vec![{
+                        // A tool call arrives as text like any other output; whether this
+                        // turn *is* a call is decided here, by parsing. `finish_reason`
+                        // must say `tool_calls` - clients branch on it before they look at
+                        // the message, and a call reported as `stop` is a call never run.
+                        let calls = crate::tool_calling::parse_tool_calls(&content, &active_tools);
+                        if calls.is_empty() {
+                            Choice {
+                                index: 0,
+                                message: AssistantMessage::text(content),
+                                finish_reason: Some("stop".to_string()),
+                            }
+                        } else {
+                            Choice {
+                                index: 0,
+                                message: AssistantMessage::calls(calls),
+                                finish_reason: Some("tool_calls".to_string()),
+                            }
+                        }
                     }],
                     usage: Usage {
                         prompt_tokens: 0, // Token counting not needed for local inference
@@ -509,6 +542,8 @@ mod tests {
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
+            tools: None,
+            tool_choice: None,
         };
 
         // Exercise handler code path (will gracefully fail due to no model)
@@ -536,10 +571,7 @@ mod tests {
             model: "test-model".to_string(),
             choices: vec![Choice {
                 index: 0,
-                message: crate::api::ChatMessage {
-                    role: "assistant".to_string(),
-                    content: "Hello world".to_string(),
-                },
+                message: AssistantMessage::text("Hello world".to_string()),
                 finish_reason: Some("stop".to_string()),
             }],
             usage: Usage {
@@ -551,7 +583,7 @@ mod tests {
 
         assert_eq!(response.id, "test-id");
         assert_eq!(response.choices.len(), 1);
-        assert_eq!(response.choices[0].message.content, "Hello world");
+        assert_eq!(response.choices[0].message.content.as_deref(), Some("Hello world"));
     }
 
     #[test]
@@ -559,6 +591,7 @@ mod tests {
         let choice = ChunkChoice {
             index: 0,
             delta: Delta {
+                tool_calls: None,
                 role: Some("assistant".to_string()),
                 content: Some("token".to_string()),
             },
@@ -588,6 +621,8 @@ mod tests {
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let _response = chat_completions(State(state), Json(request)).await;
@@ -628,6 +663,8 @@ mod tests {
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
+            tools: None,
+            tool_choice: None,
         };
 
         // Exercise streaming path (lines 132-213)
@@ -672,6 +709,8 @@ mod tests {
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
+            tools: None,
+            tool_choice: None,
         };
 
         // Exercise non-streaming path (lines 214-244)
@@ -780,6 +819,7 @@ mod tests {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
+                    tool_calls: None,
                     role: Some("assistant".to_string()),
                     content: Some("Hello".to_string()),
                 },
@@ -800,6 +840,7 @@ mod tests {
     #[test]
     fn test_delta_with_role_only() {
         let delta = Delta {
+            tool_calls: None,
             role: Some("assistant".to_string()),
             content: None,
         };
@@ -811,6 +852,7 @@ mod tests {
     #[test]
     fn test_delta_with_content_only() {
         let delta = Delta {
+            tool_calls: None,
             role: None,
             content: Some("token".to_string()),
         };
@@ -904,10 +946,7 @@ mod tests {
     fn test_finish_reason_values() {
         let choice = Choice {
             index: 0,
-            message: crate::api::ChatMessage {
-                role: "assistant".to_string(),
-                content: "Response".to_string(),
-            },
+            message: AssistantMessage::text("Response".to_string()),
             finish_reason: Some("stop".to_string()),
         };
 
@@ -916,6 +955,7 @@ mod tests {
         let chunk_choice = ChunkChoice {
             index: 0,
             delta: Delta {
+                tool_calls: None,
                 role: None,
                 content: None,
             },
@@ -1036,6 +1076,8 @@ mod tests {
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
+            tools: None,
+            tool_choice: None,
         };
 
         // Skip actual model loading in tests - models don't exist
@@ -1055,6 +1097,8 @@ mod tests {
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
+            tools: None,
+            tool_choice: None,
         };
 
         // Skip actual model loading in tests - models don't exist
@@ -1118,6 +1162,8 @@ mod tests {
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let _response = chat_completions(State(state), Json(invalid_request)).await;
@@ -1139,10 +1185,7 @@ mod tests {
             model: "test-model".to_string(),
             choices: vec![Choice {
                 index: 0,
-                message: crate::api::ChatMessage {
-                    role: "assistant".to_string(),
-                    content: "Hello world".to_string(),
-                },
+                message: AssistantMessage::text("Hello world".to_string()),
                 finish_reason: Some("stop".to_string()),
             }],
             usage: Usage {
@@ -1199,6 +1242,7 @@ mod tests {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
+                    tool_calls: None,
                     role: Some("assistant".to_string()),
                     content: Some("Hello".to_string()),
                 },
