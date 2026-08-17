@@ -22,11 +22,11 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Report runner size
-        shell: bash
+        shell: pwsh
         run: |
-          echo "cores: $NUMBER_OF_PROCESSORS"
-          wmic cpu get name 2>/dev/null | head -3 || true
-          df -h /c | tail -1
+          Write-Host "cores: $env:NUMBER_OF_PROCESSORS"
+          Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name
+          Get-PSDrive C | Select-Object Used,Free
 
       - name: Checkout mistral.rs
         uses: actions/checkout@v4
@@ -64,22 +64,29 @@ jobs:
           # later run cheap.
           key: mistralrs-cuda-${{ inputs.compute_cap }}
 
+      # pwsh, not bash. Under `shell: bash` the runner puts Git for Windows' usr/bin
+      # ahead of MSVC on PATH, so rustc resolves `link.exe` to GNU coreutils `link`
+      # and every build script dies with "/usr/bin/link: extra operand". That is how
+      # the second run of this workflow failed.
       - name: Build
-        shell: bash
+        shell: pwsh
         env:
           CUDA_COMPUTE_CAP: ${{ inputs.compute_cap }}
         run: |
-          nvcc --version | tail -2
+          nvcc --version | Select-Object -Last 2
           rustc --version
-          start=$(date +%s)
+          Write-Host "linker resolves to: $((Get-Command link.exe).Source)"
+          $start = Get-Date
           cargo build --release --features cuda -p mistralrs-cli
-          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $secs = [int]((Get-Date) - $start).TotalSeconds
+          "BUILD_SECONDS=$secs" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Report build time
-        shell: bash
+        shell: pwsh
         run: |
-          echo "::notice title=Windows CUDA build::${BUILD_SECONDS}s on ${NUMBER_OF_PROCESSORS} cores"
-          ls -la target/release/mistralrs.exe
+          Write-Host "::notice title=Windows CUDA build::$env:BUILD_SECONDS s on $env:NUMBER_OF_PROCESSORS cores"
+          Get-Item target/release/mistralrs.exe | Select-Object Name,Length,LastWriteTime
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
