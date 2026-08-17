@@ -76,6 +76,15 @@ jobs:
         shell: pwsh
         env:
           CUDA_COMPUTE_CAP: ${{ inputs.compute_cap }}
+          # The runner's newest Visual Studio is VS18 (MSVC 14.51) and CUDA 12.8 refuses
+          # any host compiler past VS2022:
+          #   host_config.h(170): fatal error C1189: unsupported Microsoft Visual Studio
+          #   version! Only the versions between 2017 and 2022 (inclusive) are supported!
+          # nvcc reads NVCC_PREPEND_FLAGS from the environment, which is the only way to
+          # pass the override down through candle's build script. CUDA 12.8 is kept
+          # deliberately: it is the toolkit the local build was validated against, so the
+          # artifact matches what has actually been run on a GPU.
+          NVCC_PREPEND_FLAGS: "-allow-unsupported-compiler"
         run: |
           nvcc --version | Select-Object -Last 2
           rustc --version
