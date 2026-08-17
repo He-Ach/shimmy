@@ -1,0 +1,80 @@
+# Build a CUDA-enabled mistralrs.exe on a Windows runner.
+#
+# Upstream publishes CUDA binaries for Linux only and a CPU-only Windows zip, so the
+# Windows GPU build does not exist as an artifact anywhere. A GitHub runner has no GPU,
+# which does not matter: nvcc compiles device code without one. What we want out of this
+# is a downloadable .exe and a wall-clock number to compare against building locally.
+#
+# PagedAttention is Unix-only upstream and compiles out on Windows.
+name: windows-cuda-mistralrs
+
+on:
+  workflow_dispatch:
+    inputs:
+      compute_cap:
+        description: "CUDA compute capability (86 = RTX 3060/3090)"
+        required: false
+        default: "86"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Report runner size
+        shell: bash
+        run: |
+          echo "cores: $NUMBER_OF_PROCESSORS"
+          wmic cpu get name 2>/dev/null | head -3 || true
+          df -h /c | tail -1
+
+      - name: Checkout mistral.rs
+        uses: actions/checkout@v4
+        with:
+          repository: EricLBuehler/mistral.rs
+          ref: master
+          fetch-depth: 1
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.24
+        id: cuda
+        with:
+          cuda: "12.8.0"
+          method: "network"
+          # Only what nvcc needs to compile the kernels; the full toolkit is a much
+          # larger download for no gain on a build-only runner.
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "curand", "curand_dev", "nvrtc", "nvrtc_dev", "visual_studio_integration"]'
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # A cold run is the number we are measuring; the cache is what makes every
+          # later run cheap.
+          key: mistralrs-cuda-${{ inputs.compute_cap }}
+
+      - name: Build
+        shell: bash
+        env:
+          CUDA_COMPUTE_CAP: ${{ inputs.compute_cap }}
+        run: |
+          nvcc --version | tail -2
+          rustc --version
+          start=$(date +%s)
+          cargo build --release --features cuda -p mistralrs-cli
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      - name: Report build time
+        shell: bash
+        run: |
+          echo "::notice title=Windows CUDA build::${BUILD_SECONDS}s on ${NUMBER_OF_PROCESSORS} cores"
+          ls -la target/release/mistralrs.exe
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mistralrs-windows-cuda-sm${{ inputs.compute_cap }}
+          path: target/release/mistralrs.exe
+          if-no-files-found: error
