@@ -73,7 +73,10 @@ jobs:
         with:
           # A cold run is the number we are measuring; the cache is what makes every
           # later run cheap.
-          key: mistralrs-cuda-${{ inputs.compute_cap }}
+          # v2: the previous cache was populated by a build that used the repo's
+          # `-C target-cpu=native`, so restoring it onto a runner with a different CPU
+          # made rustc itself die with STATUS_ILLEGAL_INSTRUCTION.
+          key: mistralrs-cuda-v2-${{ inputs.compute_cap }}
 
       # pwsh, not bash. Under `shell: bash` the runner puts Git for Windows' usr/bin
       # ahead of MSVC on PATH, so rustc resolves `link.exe` to GNU coreutils `link`
@@ -83,6 +86,16 @@ jobs:
         shell: pwsh
         env:
           CUDA_COMPUTE_CAP: ${{ inputs.compute_cap }}
+          # The repo's own .cargo/config.toml sets `-C target-cpu=native`. That is right
+          # for someone building on the machine they will run on, and wrong for an
+          # artifact other machines download: the binary would carry instructions the
+          # downloader's CPU may not have. It also broke the build outright — a cache
+          # populated on one runner's CPU made rustc die with STATUS_ILLEGAL_INSTRUCTION
+          # on a runner with another. RUSTFLAGS overrides the config file.
+          #
+          # x86-64-v3 is Haswell (2013) and later: AVX2 without assuming AVX-512, which
+          # is a safe floor for a machine with a CUDA GPU in it.
+          RUSTFLAGS: "-C target-cpu=x86-64-v3"
           # Rust links the dynamic CRT on windows-msvc while nvcc defaults to the static
           # one, and one binary cannot contain both:
           #   rust-lld: /failifmismatch: mismatch detected for 'RuntimeLibrary'
@@ -151,7 +164,10 @@ jobs:
         with:
           cuda: "12.8.0"
           method: "network"
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas-dev", "curand", "curand-dev", "nvrtc", "nvrtc-dev"]'
+          # Linux names its CUDA libraries differently than Windows does: the Windows
+          # spelling `cublas` resolves to no apt package at all, and the install step
+          # fails with "Unable to locate package cuda-cublas-12-8".
+          sub-packages: '["nvcc", "cudart", "libcublas", "libcublas-dev", "libcurand", "libcurand-dev", "nvrtc", "nvrtc-dev"]'
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -159,11 +175,14 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
         with:
-          key: mistralrs-linux-cuda-${{ inputs.compute_cap }}
+          key: mistralrs-linux-cuda-v2-${{ inputs.compute_cap }}
 
       - name: Build
         env:
           CUDA_COMPUTE_CAP: ${{ inputs.compute_cap }}
+          # See the Windows job: the repo pins `-C target-cpu=native`, which must not
+          # decide the instruction set of a binary other machines download.
+          RUSTFLAGS: "-C target-cpu=x86-64-v3"
         run: |
           nvcc --version | tail -2
           start=$(date +%s)
